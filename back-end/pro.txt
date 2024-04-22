@@ -1,0 +1,871 @@
+create or replace package os_password_change as
+  type data_cure is ref cursor;
+  procedure dg_init(p_userid varchar2, p_debug varchar2);
+  procedure dg_print(msg varchar2);
+  procedure os_get_hostname_and_usre_frist_load(p_user        in varchar2,
+                                                p_debug       in varchar2 default 'NN',
+                                                p_hostname    out data_cure,
+                                                p_os_user     out data_cure,
+                                                p_system_type out data_cure,
+                                                p_env         out data_cure,
+                                                p_site        out data_cure,
+                                                op_status     out varchar2,
+                                                op_message    out clob);
+
+  procedure os_user_get_user_data_for_update(p_user        in varchar2,
+                                             p_debug       in varchar2 default 'NN',
+                                             p_user_name   in varchar2,
+                                             p_data_record out data_cure,
+                                             op_status     out varchar2,
+                                             op_message    out clob);
+  procedure proc_insert_log(p_even_code        varchar2,
+                            p_mod_no           number,
+                            p_function_id      varchar2,
+                            p_maker_id         varchar2,
+                            p_maker_dt_stamp   date,
+                            p_checker_id       varchar2,
+                            p_checker_dt_stamp date,
+                            p_record_stat      varchar2,
+                            p_auth_stat        varchar2,
+                            p_table_name       varchar2,
+                            p_col_condition    varchar2,
+                            p_con_type         varchar2,
+                            p_col_value        varchar2,
+                            p_con_choose       varchar2);
+  procedure insert_os_pwd_generate_tmp(p_user        in varchar2,
+                                       p_date        in varchar2,
+                                       p_os_username in varchar2,
+                                       p_password    in varchar2,
+                                       p_type        in varchar2,
+                                       op_status     out varchar2,
+                                       op_message    out clob);
+  procedure update_os_pwd_generate_tmp(p_user     in varchar2,
+                                       p_date     in varchar2,
+                                       p_id       in varchar2,
+                                       p_password in varchar2,
+                                       op_status  out varchar2,
+                                       op_message out clob);
+  procedure delete_os_pwd_generate_tmp(p_user     in varchar2,
+                                       p_id       number,
+                                       op_status  out varchar2,
+                                       op_message out clob);
+  procedure get_os_pwd_generate_tmp(p_env      in varchar2,
+                                    p_data     out data_cure,
+                                    op_status  out varchar2,
+                                    op_message out clob);
+  procedure get_user_admin(p_user     out data_cure,
+                           op_status  out varchar2,
+                           op_message out clob);
+  procedure get_exclude_user(p_data     out data_cure,
+                             op_status  out varchar2,
+                             op_message out clob);
+  procedure get_os_pwd_generate_tmp_by_id(p_id       in varchar2,
+                                          p_data     out data_cure,
+                                          op_status  out varchar2,
+                                          op_message out clob);
+end os_password_change;
+create or replace package body os_password_change as
+  v_user_id    varchar2(50);
+  v_real_debug varchar2(1) := 'N';
+  v_user_debug varchar2(1) := 'N';
+
+  procedure dg_init(p_userid varchar2, p_debug varchar2) is
+  begin
+    v_user_id := p_userid;
+    begin
+      select substr(p_debug, 1, 1), substr(p_debug, 2, 2)
+        into v_real_debug, v_user_debug
+        from dual;
+    exception
+      when others then
+        v_real_debug := 'N';
+        v_user_debug := 'N';
+    end;
+  end dg_init;
+  procedure dg_print(msg varchar2) is
+    slog_file_name varchar2(100);
+    smsg           clob;
+    f              utl_file.file_type;
+  begin
+    if v_real_debug = 'Y' then
+      if v_user_debug = 'Y' then
+        slog_file_name := to_char(sysdate, 'YYYYMMDD') || '-' ||
+                          'USER_CREATION' || '-' || v_user_id;
+        smsg           := '[' ||
+                          to_clob(to_char(sysdate, 'dd-MON-yyyy hh24:mi:ss')) || '] ' ||
+                          fn_append_calling_program || msg;
+        f              := sys.utl_file.fopen('ITO_DEBUG',
+                                             slog_file_name || '.log',
+                                             'a',
+                                             32767); -- a = append
+        utl_file.put(f, smsg);
+        utl_file.new_line(f);
+        utl_file.fclose(f);
+      end if;
+    end if;
+  end dg_print;
+
+  procedure os_get_hostname_and_usre_frist_load(p_user        in varchar2,
+                                                p_debug       in varchar2 default 'NN',
+                                                p_hostname    out data_cure,
+                                                p_os_user     out data_cure,
+                                                p_system_type out data_cure,
+                                                p_env         out data_cure,
+                                                p_site        out data_cure,
+                                                op_status     out varchar2,
+                                                op_message    out clob) is
+    tmp_system_type data_cure;
+    tmp_hostname    data_cure;
+    tmp_user        data_cure;
+    tmp_env         data_cure;
+    tmp_site        data_cure;
+    vir_id          number;
+  
+  begin
+    dg_init(p_user, p_debug);
+  
+    vir_id := fn_input_id('OS_USER_LOG', 'LOG_ID');
+  
+    if vir_id <> 0 then
+      open tmp_system_type for
+        select a.system_id, a.system_name
+          from so_all_system a
+         where a.system_name = 'Operating System';
+      p_system_type := tmp_system_type;
+    
+      open tmp_hostname for
+        select distinct sinv.host_id,
+                        sinv.host_name,
+                        lower(ums.system_name),
+                        sinv.site,
+                        sinv.environment,
+                        sinv.os_platform,
+                        umr.request_staff_id
+          from so_hs_inventory sinv
+         inner join rpt_user_mgt_user_system ums
+            on sinv.host_id = ums.host_id
+         inner join rpt_user_mgt_request umr
+            on ums.request_id = umr.request_id
+         where sinv.os_platform <> '0';
+    
+      p_hostname := tmp_hostname;
+      open tmp_user for
+        select *
+          from (select distinct sinv.host_id,
+                                lower(ums.user_system),
+                                sinv.host_name,
+                                sinv.site,
+                                sinv.environment,
+                                umr.request_staff_id,
+                                sinv.os_platform,
+                                so.role_name,
+                                upper(sinv.host_name) || '-' || upper(ums.user_system) || '-' ||
+                                upper(sinv.site) || '-' || upper(sinv.environment) || '-' ||
+                                sinv.host_id as condition
+                  from so_hs_inventory sinv
+                 inner join rpt_user_mgt_user_system ums
+                    on sinv.host_id = ums.host_id
+                 inner join rpt_user_mgt_request umr
+                    on ums.request_id = umr.request_id
+                 inner join rpt_system_role so
+                    on ums.role_id = so.role_id
+                 where ums.system_name like '%Operating System%'
+                   and sinv.record_stat = 'O') b
+         where b.condition not in
+               (select upper(a.hostname) || '-' || upper(a.username) || '-' || upper(a.site) || '-' ||
+                       upper(a.environment) || '-' || inv.host_id as condition
+                  from os_pwd_generate_tmp a
+                 inner join so_hs_inventory inv
+                    on a.hostname = inv.host_name
+                 where a.status <> 'D'
+                   and a.type in (select c.site
+                                    from (select 'User on board' as site,
+                                                 'ExcludeUser' as type
+                                            from dual) c));
+      p_os_user := tmp_user;
+    
+      open tmp_env for
+        select distinct e.environment as name, 'ENV' as type
+          from so_hs_inventory e
+        union all
+        select o.os_name as name, 'OS PLATFORM' as type
+          from so_hs_all_os_type o;
+      p_env := tmp_env;
+    
+      open tmp_site for
+        select rownum as id, a.site, a.type
+          from (select 'DC' as site, 'SITE' as type
+                  from dual
+                union all
+                select 'DR' as site, 'SITE' as type
+                  from dual
+                union all
+                select 'User on board' as site, 'ExcludeUser' as type
+                  from dual) a;
+      p_site := tmp_site;
+    
+      op_status  := '1';
+      op_message := 'Get data seccuessfully.';
+    else
+      rollback;
+      op_status  := '-1';
+      op_message := 'Error get end point.';
+    end if;
+  exception
+    when others then
+      rollback;
+      op_status  := '-1';
+      op_message := 'Error: ' || sqlerrm || ' -> ' ||
+                    dbms_utility.format_error_backtrace;
+      dg_print('Error: ' || sqlerrm || ' -> ' ||
+               dbms_utility.format_error_backtrace);
+    
+  end os_get_hostname_and_usre_frist_load;
+
+  procedure os_user_get_user_data_for_update(p_user        in varchar2,
+                                             p_debug       in varchar2 default 'NN',
+                                             p_user_name   in varchar2,
+                                             p_data_record out data_cure,
+                                             op_status     out varchar2,
+                                             op_message    out clob) is
+  
+    tmp_data_record data_cure;
+    vir_id          number;
+  
+  begin
+    dg_init(p_user, p_debug);
+    select count(b.category_id)
+      into vir_id
+      from so_all_system b
+     where rownum < 2;
+    if vir_id <> 0 then
+      open tmp_data_record for
+        select *
+          from (select distinct upper(a.user_system),
+                                a.system_name,
+                                a.host_id,
+                                b.host_name,
+                                b.site,
+                                b.environment,
+                                (select ur.request_staff_id
+                                   from rpt_user_mgt_request ur
+                                  where ur.request_id = a.request_id),
+                                b.os_platform,
+                                upper(a.user_system) || '-' || b.host_name || '-' ||
+                                (select ur.request_staff_id
+                                   from rpt_user_mgt_request ur
+                                  where ur.request_id = a.request_id) as con
+                  from rpt_user_mgt_user_system a
+                 inner join so_hs_inventory b
+                    on a.host_id = b.host_id
+                 where a.record_status <> 'D'
+                   and a.system_name = 'Operating System') subselect
+         where subselect.con in
+               (select regexp_substr(p_user_name, '[^,]+', 1, level) as user_id
+                
+                  from dual
+                connect by regexp_substr(p_user_name, '[^,]+', 1, level) is not null);
+    
+      p_data_record := tmp_data_record;
+      op_status     := '1';
+      op_message    := 'SUCCESSFULLY.';
+      dg_print(op_message);
+    else
+      rollback;
+      op_status  := '-1';
+      op_message := 'Error get end point.';
+      dg_print(op_message);
+    end if;
+  exception
+    when others then
+      rollback;
+      op_status  := '-1';
+      op_message := 'Error: ' || sqlerrm || ' -> ' ||
+                    dbms_utility.format_error_backtrace;
+      dg_print('Error: ' || sqlerrm || ' -> ' ||
+               dbms_utility.format_error_backtrace);
+  end os_user_get_user_data_for_update;
+
+  procedure proc_insert_log(p_even_code        varchar2,
+                            p_mod_no           number,
+                            p_function_id      varchar2,
+                            p_maker_id         varchar2,
+                            p_maker_dt_stamp   date,
+                            p_checker_id       varchar2,
+                            p_checker_dt_stamp date,
+                            p_record_stat      varchar2,
+                            p_auth_stat        varchar2,
+                            p_table_name       varchar2,
+                            p_col_condition    varchar2,
+                            p_con_type         varchar2,
+                            p_col_value        varchar2,
+                            p_con_choose       varchar2) is
+    tmp_log_id number;
+  
+  begin
+    tmp_log_id := fn_input_id('OS_PWD_GENERATE_RECORD_LOG', 'LOG_ID');
+    /*insert into os_pwd_generate_record_log
+          (log_id,
+           action_code,
+           mod_no,
+           function_id,
+           table_name,
+           maker_id,
+           maker_dt_stamp,
+           checker_id,
+           checker_dt_stamp,
+           record_stat,
+           auth_stat,
+           rec_data)
+        values
+          (tmp_log_id,
+           p_even_code,
+           p_mod_no,
+           p_function_id,
+           p_table_name,
+           p_maker_id,
+           p_maker_dt_stamp,
+           p_checker_id,
+           p_checker_dt_stamp,
+           p_record_stat,
+           p_auth_stat,
+           (case when p_con_choose is not null then (select dbms_xmlquery.getxml('SELECT PWD.pwd_date, PWD.hostname, 
+                                       PWD.username,PWD.pwd FROM
+              (  select * from  (SELECT A.PWD_DATE, A.HOSTNAME, A.USERNAME, 
+              A.PWD, A.USERNAME || ''~'' || A.HOSTNAME AS con FROM OS_PWD_GENERATE_TMP A) subselect
+              WHERE subselect.con IN ( SELECT REGEXP_SUBSTR(
+                                ''' ||
+                                        p_col_value || '''
+                                , ''[^,]+'', 1, LEVEL) AS USER_ID 
+               FROM DUAL
+               CONNECT BY REGEXP_SUBSTR(
+                               ''' ||
+                                        p_col_value || '''
+                                , ''[^,]+'', 1, LEVEL) IS NOT NULL)) PWD')
+              from dual)
+              case when p_con_choose = 'IN' 
+                then (select dbms_xmlquery.getxml('SELECT * FROM OS_PWD_GENERATE_TMP A WHERE A.ID IN 
+    (SELECT REGEXP_SUBSTR(
+                                ''' ||
+                                       p_col_value  || '''
+                                , ''[^,]+'', 1, LEVEL) AS USER_ID 
+               FROM DUAL
+               CONNECT BY REGEXP_SUBSTR(
+                               ''' ||
+                                       p_col_value  || '''
+                                , ''[^,]+'', 1, LEVEL) IS NOT NULL)')
+      from dual;)
+              else
+           (select dbms_xmlquery.getxml('SELECT * FROM ' || p_table_name ||
+                                        ' WHERE ' || p_col_condition ||
+                                        p_con_type || '''' || p_col_value || '''')
+              from dual) end);*/
+    insert into os_pwd_generate_record_log
+      (log_id,
+       action_code,
+       mod_no,
+       function_id,
+       table_name,
+       maker_id,
+       maker_dt_stamp,
+       checker_id,
+       checker_dt_stamp,
+       record_stat,
+       auth_stat,
+       rec_data)
+    values
+      (tmp_log_id,
+       p_even_code,
+       p_mod_no,
+       p_function_id,
+       p_table_name,
+       p_maker_id,
+       p_maker_dt_stamp,
+       p_checker_id,
+       p_checker_dt_stamp,
+       p_record_stat,
+       p_auth_stat,
+       case when p_con_choose = 'LOOP' then (select dbms_xmlquery.getxml('SELECT PWD.pwd_date, PWD.hostname, 
+                                   PWD.username,PWD.pwd FROM
+          (  select * from  (SELECT A.PWD_DATE, A.HOSTNAME, A.USERNAME, 
+          A.PWD, A.USERNAME || ''~'' || b.host_id AS con FROM OS_PWD_GENERATE_TMP A inner join so_hs_inventory b on a.hostname = b.host_name) subselect
+          WHERE subselect.con IN ( SELECT REGEXP_SUBSTR(
+                            ''' ||
+                                    p_col_value || '''
+                            , ''[^,]+'', 1, LEVEL) AS USER_ID 
+           FROM DUAL
+           CONNECT BY REGEXP_SUBSTR(
+                           ''' ||
+                                    p_col_value || '''
+                            , ''[^,]+'', 1, LEVEL) IS NOT NULL)) PWD')
+          from dual) when p_con_choose = 'IN' then (select dbms_xmlquery.getxml('SELECT * FROM OS_PWD_GENERATE_TMP A WHERE A.ID IN (
+            SELECT REGEXP_SUBSTR(''' ||
+                                    p_col_value ||
+                                    ''', ''[^,]+'', 1, LEVEL) AS USER_ID
+            FROM DUAL
+            CONNECT BY REGEXP_SUBSTR(''' ||
+                                    p_col_value ||
+                                    ''', ''[^,]+'', 1, LEVEL) IS NOT NULL)')
+          from dual) else
+       (select dbms_xmlquery.getxml('select * from ' || p_table_name ||
+                                    ' where ' || p_col_condition || '=''' ||
+                                    p_col_value || '''')
+          from dual) end);
+  
+    commit;
+    dbms_output.put_line('Log Insert Successfully');
+  exception
+    when others then
+      dbms_output.put_line('Log insert failed');
+  end proc_insert_log;
+  procedure insert_os_pwd_generate_tmp(p_user        in varchar2,
+                                       p_date        in varchar2,
+                                       p_os_username in varchar2,
+                                       p_password    in varchar2,
+                                       p_type        in varchar2,
+                                       op_status     out varchar2,
+                                       op_message    out clob) is
+  
+    v_verify               number;
+    v_verify_user_hostname number;
+    v_auto                 number;
+  
+  begin
+    if p_os_username is not null then
+      for d in (select regexp_substr(p_os_username, '[^,]+', 1, level) as userhost
+                  from dual
+                connect by regexp_substr(p_os_username, '[^,]+', 1, level) is not null) loop
+      
+        --underscore_pos := instr(d.userhost, '~');
+        /*first_part := regexp_substr(my_string, '[^~]+', 1, 1);
+        second_part := regexp_substr(my_string, '[^~]+', 1, 2);
+        third_part := regexp_substr(my_string, '[^~]+', 1, 3);*/
+      
+        --verufy duplicate
+        select count(*)
+          into v_verify
+          from os_pwd_generate_tmp a
+         where lower(a.hostname) =
+               lower((select i.host_name
+                  from so_hs_inventory i
+                 where i.host_id = regexp_substr(d.userhost, '[^~]+', 1, 2) /*substr(d.userhost, underscore_pos + 1)*/
+                ))
+           and lower(a.username) = lower(regexp_substr(d.userhost, '[^~]+', 1, 1)) --substr(d.userhost, 1, underscore_pos - 1)
+           and a.status = 'O'
+           and a.type = p_type;
+      
+        --verify hostname and user
+        select distinct count(a.host_id)
+          into v_verify_user_hostname
+          from so_hs_inventory a
+         inner join rpt_user_mgt_user_system b
+            on a.host_id = b.host_id
+         where b.system_name like '%Operating System%'
+           and a.record_stat <> 'D'
+           and a.host_id = regexp_substr(d.userhost, '[^~]+', 1, 2)
+           and lower(b.user_system) = lower(regexp_substr(d.userhost, '[^~]+', 1, 1));
+      
+        --auto id 
+        v_auto := fn_input_id('OS_PWD_GENERATE_TMP', 'ID');
+      
+        --verify and insert data to table 
+        if v_verify = 0 and v_verify_user_hostname > 0 then
+          insert into os_pwd_generate_tmp
+            (pwd_date,
+             hostname,
+             username,
+             pwd,
+             id,
+             create_by,
+             last_oper_by,
+             last_oper_date,
+             site,
+             environment,
+             status,
+             staff_id,
+             type)
+          values
+            (p_date,
+             (select i.host_name
+                from so_hs_inventory i
+               where i.host_id = regexp_substr(d.userhost, '[^~]+', 1, 2)),
+            lower(regexp_substr(d.userhost, '[^~]+', 1, 1)),
+             p_password,
+             v_auto,
+             p_user,
+             p_user,
+             sysdate,
+             (select i.site
+                from so_hs_inventory i
+               where i.host_id = regexp_substr(d.userhost, '[^~]+', 1, 2)),
+             (select i.environment
+                from so_hs_inventory i
+               where i.host_id = regexp_substr(d.userhost, '[^~]+', 1, 2)),
+             'O',
+             to_char(regexp_substr(d.userhost, '[^~]+', 1, 3)),
+             p_type);
+        
+          op_status  := '1';
+          op_message := 'SUCCESSFULLY.';
+        else
+          op_status  := '-1';
+          op_message := 'User is Duplicate.';
+        end if;
+      
+      end loop;
+    
+      --insert log
+      proc_insert_log('INSERT',
+                      1,
+                      'INSERT NEW USER HOSTNAME',
+                      p_user,
+                      sysdate,
+                      '',
+                      '',
+                      'O',
+                      'U',
+                      'OS_PWD_GENERATE_TMP',
+                      '',
+                      '',
+                      p_os_username,
+                      'LOOP');
+    
+      commit;
+    else
+      rollback;
+      op_status  := '-1';
+      op_message := 'Error insert User.';
+      dg_print(op_message);
+    end if;
+  exception
+    when others then
+      rollback;
+      op_status  := '-1';
+      op_message := 'Error: ' || sqlerrm || ' -> ' ||
+                    dbms_utility.format_error_backtrace;
+      dg_print('Error: ' || sqlerrm || ' -> ' ||
+               dbms_utility.format_error_backtrace);
+  end insert_os_pwd_generate_tmp;
+  procedure update_os_pwd_generate_tmp(p_user     in varchar2,
+                                       p_date     in varchar2,
+                                       p_id       in varchar2,
+                                       p_password in varchar2,
+                                       op_status  out varchar2,
+                                       op_message out clob) is
+  
+    v_verify number;
+  
+  begin
+    if p_date is not null then
+    
+      --verify  
+      select count(*)
+        into v_verify
+        from os_pwd_generate_tmp a
+       where rownum = 1;
+    
+      if v_verify = 1 then
+        update os_pwd_generate_tmp a
+           set a.pwd_date       = p_date,
+               a.pwd            = p_password,
+               a.last_oper_by   = lower(p_user),
+               a.last_oper_date = sysdate
+         where a.id in
+               (select regexp_substr(p_id, '[^,]+', 1, level) as id
+                  from dual
+                connect by regexp_substr(p_id, '[^,]+', 1, level) is not null);
+      end if;
+    
+      --insert log
+      proc_insert_log('UPDATE',
+                      1,
+                      'UPDATE USER HOSTNAME',
+                      p_user,
+                      sysdate,
+                      '',
+                      '',
+                      'O',
+                      'U',
+                      'OS_PWD_GENERATE_TMP',
+                      '',
+                      '',
+                      p_id,
+                      'IN');
+    
+      commit;
+      op_status  := '1';
+      op_message := 'UPDATE SUCCESS.';
+    else
+      rollback;
+      op_status  := '-1';
+      op_message := 'Error.';
+      dg_print(op_message);
+    end if;
+  exception
+    when others then
+      rollback;
+      op_status  := '-1';
+      op_message := 'Error: ' || sqlerrm || ' -> ' ||
+                    dbms_utility.format_error_backtrace;
+      dg_print('Error: ' || sqlerrm || ' -> ' ||
+               dbms_utility.format_error_backtrace);
+  end update_os_pwd_generate_tmp;
+
+  procedure delete_os_pwd_generate_tmp(p_user     in varchar2,
+                                       p_id       number,
+                                       op_status  out varchar2,
+                                       op_message out clob) is
+  
+    v_verify number;
+  begin
+    if p_id is not null then
+    
+      --verify  
+      select count(*)
+        into v_verify
+        from os_pwd_generate_tmp a
+       where a.id = p_id;
+      if v_verify = 1 then
+      
+        --insert log
+        proc_insert_log('DELETE',
+                        3,
+                        'DELETE OS PWD GENERRATE',
+                        p_user,
+                        sysdate,
+                        '',
+                        '',
+                        'O',
+                        'U',
+                        'OS_PWD_GENERATE_TMP',
+                        'ID',
+                        '=',
+                        p_id,
+                        '');
+      
+        update os_pwd_generate_tmp a set a.status = 'D' where a.id = p_id;
+      end if;
+    
+      commit;
+      op_status  := '1';
+      op_message := 'UPDATE SUCCESS.';
+    else
+      rollback;
+      op_status  := '-1';
+      op_message := 'Error.';
+      dg_print(op_message);
+    end if;
+  exception
+    when others then
+      rollback;
+      op_status  := '-1';
+      op_message := 'Error: ' || sqlerrm || ' -> ' ||
+                    dbms_utility.format_error_backtrace;
+      dg_print('Error: ' || sqlerrm || ' -> ' ||
+               dbms_utility.format_error_backtrace);
+  end delete_os_pwd_generate_tmp;
+
+  procedure get_os_pwd_generate_tmp(p_env      in varchar2,
+                                    p_data     out data_cure,
+                                    op_status  out varchar2,
+                                    op_message out clob) is
+  
+    tmp_data data_cure;
+  begin
+  
+    /*    --verify  
+    select count(*) into v_verify from os_pwd_generate_tmp;
+    
+    if v_verify > 0 then*/
+    open tmp_data for
+      select a.id,
+             a.pwd_date,
+             a.hostname,
+             a.username,
+             a.pwd,
+             a.create_by,
+             a.last_oper_by,
+             a.last_oper_date,
+             a.site,
+             a.environment,
+             inv.host_id,
+             a.staff_id,
+             inv.os_platform
+        from os_pwd_generate_tmp a
+       inner join so_hs_inventory inv
+          on a.hostname = inv.host_name
+       where a.status <> 'D'
+         and a.type = 'pwdGen'
+         and (case
+               when p_env = 'A' and a.environment in ('PROD', 'UAT', 'SIT') then
+                1
+               when p_env = 'P' and a.environment = 'PROD' then
+                1
+               when p_env = 'U' and a.environment in ('UAT', 'SIT') then
+                1
+               else
+                0
+             end) = 1
+       order by a.id;
+    p_data     := tmp_data;
+    op_status  := '1';
+    op_message := 'GET DATA SUCCESS.';
+    /*    else
+      op_status  := '1';
+      op_message := 'No Data Found.';
+    end if;*/
+  exception
+    when others then
+      rollback;
+      op_status  := '-1';
+      op_message := 'Error: ' || sqlerrm || ' -> ' ||
+                    dbms_utility.format_error_backtrace;
+      dg_print('Error: ' || sqlerrm || ' -> ' ||
+               dbms_utility.format_error_backtrace);
+  end get_os_pwd_generate_tmp;
+
+  procedure get_user_admin(p_user     out data_cure,
+                           op_status  out varchar2,
+                           op_message out clob) is
+  
+    v_verify number;
+    tmp_user data_cure;
+  
+  begin
+  
+    --verify  
+    select count(ad.no)
+      into v_verify
+      from current_ad_users ad
+     where rownum < 2;
+  
+    if v_verify > 0 then
+      open tmp_user for
+        select ad.user_id
+          from current_ad_users ad
+         where ad.title like '%System Admin%'
+        union all
+        select '1990'
+          from dual
+        union all
+        select '09816'
+          from dual
+        union all
+        select '11225'
+          from dual
+        union all
+        select '06101'
+          from dual;
+    end if;
+    p_user     := tmp_user;
+    op_status  := '1';
+    op_message := 'GET DATA SUCCESS.';
+  
+  exception
+    when others then
+      rollback;
+      op_status  := '-1';
+      op_message := 'Error: ' || sqlerrm || ' -> ' ||
+                    dbms_utility.format_error_backtrace;
+      dg_print('Error: ' || sqlerrm || ' -> ' ||
+               dbms_utility.format_error_backtrace);
+  end get_user_admin;
+  procedure get_exclude_user(p_data     out data_cure,
+                             op_status  out varchar2,
+                             op_message out clob) is
+  
+    tmp_data data_cure;
+  begin
+  
+    open tmp_data for
+      select rownum as id, b.*
+        from (select a.type,
+                     a.hostname,
+                     lower(a.username),
+                     a.id as r_id,
+                     a.create_by,
+                     a.last_oper_by,
+                     a.last_oper_date,
+                     a.site,
+                     a.environment,
+                     inv.host_id,
+                     a.staff_id,
+                     inv.os_platform
+                from os_pwd_generate_tmp a
+               inner join so_hs_inventory inv
+                  on a.hostname = inv.host_name
+               where a.status <> 'D'
+                 and a.type in (select c.site
+                                  from (select 'User on board' as site,
+                                               'ExcludeUser' as type
+                                          from dual) c)) b
+       order by id;
+    p_data     := tmp_data;
+    op_status  := '1';
+    op_message := 'Get data seccues.';
+  exception
+    when others then
+      rollback;
+      op_status  := '-1';
+      op_message := 'Error: ' || sqlerrm || ' -> ' ||
+                    dbms_utility.format_error_backtrace;
+      dg_print('Error: ' || sqlerrm || ' -> ' ||
+               dbms_utility.format_error_backtrace);
+  end get_exclude_user;
+
+  procedure get_os_pwd_generate_tmp_by_id(p_id       in varchar2,
+                                          p_data     out data_cure,
+                                          op_status  out varchar2,
+                                          op_message out clob) is
+  
+    tmp_data data_cure;
+    v_verify number;
+  begin
+  
+    --verify  
+    select count(*)
+      into v_verify
+      from os_pwd_generate_tmp a
+     where a.id = p_id;
+  
+    if v_verify = 1 then
+      open tmp_data for
+        select a.id,
+               a.pwd_date,
+               a.hostname,
+               a.username,
+               a.pwd,
+               a.create_by,
+               a.last_oper_by,
+               a.last_oper_date,
+               a.site,
+               a.environment,
+               inv.host_id,
+               a.staff_id,
+               inv.os_platform
+          from os_pwd_generate_tmp a
+         inner join so_hs_inventory inv
+            on a.hostname = inv.host_name
+         where a.status <> 'D'
+           and a.type = 'pwdGen'
+           and a.environment in ('PROD', 'UAT', 'SIT')
+           and a.id = p_id;
+    
+      p_data     := tmp_data;
+      op_status  := '1';
+      op_message := 'Get data complete';
+    else
+      op_status  := '1';
+      op_message := 'No Data Found.';
+    end if;
+  exception
+    when others then
+      rollback;
+      op_status  := '-1';
+      op_message := 'Error: ' || sqlerrm || ' -> ' ||
+                    dbms_utility.format_error_backtrace;
+      dg_print('Error: ' || sqlerrm || ' -> ' ||
+               dbms_utility.format_error_backtrace);
+  end get_os_pwd_generate_tmp_by_id;
+
+end os_password_change;
